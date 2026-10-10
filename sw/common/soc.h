@@ -9,6 +9,10 @@
  */
 #define TOHOST_ADDR 0xF0000000
 
+/* Simulation-only marker: tb_soc prints the cycle count for every store
+ * here ("[mark] <value> at cycle <n>"), used to time code sections. */
+#define MARK_ADDR   0xF0000004
+
 #define RAM_BASE    0x00000000
 #define PERIPH_BASE 0x10000000
 
@@ -18,6 +22,7 @@
 #define UART_BASE   0x10001000
 #define I2C_BASE    0x10002000
 #define SPI_BASE    0x10003000
+#define AES_BASE    0x10004000
 
 /* GPIO */
 #define GPIO_DATA_IN    0x00
@@ -72,5 +77,25 @@
 #define SPI_CPHA        (1u << 1)
 #define SPI_LSB_FIRST   (1u << 2)
 #define SPI_BUSY        (1u << 0)
+
+/* AES-128 accelerator */
+#define AES_CTRL        0x00
+#define AES_STATUS      0x04
+#define AES_CMD         0x08
+#define AES_BLOCKS      0x0C
+#define AES_KEY0        0x10    /* KEY0..3 at 0x10, 0x14, 0x18, 0x1C */
+#define AES_DIN0        0x20    /* DIN0..3 at 0x20 .. 0x2C */
+#define AES_DOUT0       0x30    /* DOUT0..3 at 0x30 .. 0x3C, DOUT3 read pops */
+
+#define AES_AUTO_START  (1u << 0)    /* CTRL */
+#define AES_START       (1u << 0)    /* CMD */
+#define AES_CLEAR       (1u << 1)
+#define AES_READY       (1u << 0)    /* STATUS */
+#define AES_OUT_VALID   (1u << 1)
+#define AES_BUSY        (1u << 2)
+#define AES_OVERFLOW    (1u << 3)
+#define AES_OUT_COUNT(s)  (((s) >> 8) & 0x1f)
+#define AES_IN_FLIGHT(s)  (((s) >> 16) & 0xf)
+#define AES_PIPELINED   (1u << 31)
 
 #endif

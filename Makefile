@@ -6,14 +6,17 @@
 #   make ctest        C program test
 #   make periph       peripheral tests: register level (tb_periph) and
 #                     firmware on the SoC (GPIO, UART, I2C, SPI)
+#   make aes          AES tests: cores (tb_aes_core), accelerator registers
+#                     (tb_aes_accel), firmware test + benchmark on the SoC
+#                     with the pipelined and with the iterative core
 #   make random       random lockstep tests (SEEDS="1 2 3", COUNT=600)
 #   make lint         Verilator lint of the RTL (soc_top and fpga_top)
 #   make synth        Yosys Xilinx 7-series synthesis, LUT/FF per module
 #   make sw           rebuild sw/build/*.hex (needs riscv64-unknown-elf-gcc)
 #   make run HEX=...  run one image (add TRACE=1 / VCD=wave.vcd)
 
-RTL      := $(wildcard rtl/*.v rtl/periph/*.v)
-INC      := -Irtl -Irtl/periph
+RTL      := $(wildcard rtl/*.v rtl/periph/*.v rtl/aes/*.v)
+INC      := -Irtl -Irtl/periph -Irtl/aes
 BUILD    := build
 SWBUILD  := sw/build
 
@@ -31,18 +34,20 @@ CFLAGS   := $(ARCH) -O2 -ffreestanding -nostdlib -nostartfiles -Isw/common -T sw
 
 ISA_TESTS := alu branch mem hazard
 PERIPH_TESTS := gpio_test uart_test i2c_test spi_test
+AES_TESTS := aes_test aes_bench
+AES_NVEC  ?= 200
 TB_MODELS := $(wildcard tb/models/*.v)
 SEEDS     ?= 1 2 3 4 5 6 7 8
 COUNT     ?= 600
 
-.PHONY: test unit isa ctest periph periph-unit periph-sw random lint synth sw run clean
+.PHONY: test unit isa ctest periph periph-unit periph-sw aes aes-core aes-unit aes-sw random lint synth sw run clean
 
-test: unit isa ctest periph random
+test: unit isa ctest periph aes random
 
 # ---------------------------------------------------------------------------
 # Software
 # ---------------------------------------------------------------------------
-sw: $(addprefix $(SWBUILD)/,$(addsuffix .hex,$(ISA_TESTS) ctest $(PERIPH_TESTS)))
+sw: $(addprefix $(SWBUILD)/,$(addsuffix .hex,$(ISA_TESTS) ctest $(PERIPH_TESTS) $(AES_TESTS)))
 
 $(SWBUILD)/%.elf: sw/tests/%.S sw/common/*.h sw/common/link.ld | $(SWBUILD)
 	$(CC) $(ASFLAGS) -o $@ $<
@@ -50,8 +55,15 @@ $(SWBUILD)/%.elf: sw/tests/%.S sw/common/*.h sw/common/link.ld | $(SWBUILD)
 $(SWBUILD)/ctest.elf: sw/c/main.c sw/common/crt0.S sw/common/*.h sw/common/link.ld | $(SWBUILD)
 	$(CC) $(CFLAGS) -o $@ sw/common/crt0.S sw/c/main.c
 
-$(SWBUILD)/%_test.elf: sw/periph/%_test.c sw/common/crt0.S sw/common/*.h sw/common/link.ld | $(SWBUILD)
+$(SWBUILD)/%_test.elf: sw/periph/%_test.c sw/periph/*.h sw/common/crt0.S sw/common/*.h sw/common/link.ld | $(SWBUILD)
 	$(CC) $(CFLAGS) -o $@ sw/common/crt0.S $<
+
+$(SWBUILD)/aes_bench.elf: sw/periph/aes_bench.c sw/common/crt0.S sw/common/*.h sw/common/link.ld | $(SWBUILD)
+	$(CC) $(CFLAGS) -o $@ sw/common/crt0.S $<
+
+# Vectors for aes_test (committed; regenerate with `make aes-vectors`)
+aes-vectors:
+	$(PYTHON) tools/aes_ref.py c-header -n 26 --seed 3 -o sw/periph/aes_vectors.h
 
 $(SWBUILD)/%.hex: $(SWBUILD)/%.elf
 	$(OBJCOPY) -O binary $< $(SWBUILD)/$*.bin
@@ -71,6 +83,15 @@ $(SWBUILD) $(BUILD):
 $(BUILD)/tb_soc.vvp: $(RTL) rtl/rv32i_defs.vh tb/tb_soc.v tb/rv32i_ref_model.v $(TB_MODELS) | $(BUILD)
 	$(IVERILOG) -g2012 -Wall $(INC) -o $@ -s tb_soc tb/tb_soc.v tb/rv32i_ref_model.v $(TB_MODELS) $(RTL)
 
+$(BUILD)/tb_soc_iter.vvp: $(RTL) rtl/rv32i_defs.vh tb/tb_soc.v tb/rv32i_ref_model.v $(TB_MODELS) | $(BUILD)
+	$(IVERILOG) -g2012 -Wall $(INC) -P tb_soc.AES_PIPELINED=0 -o $@ -s tb_soc tb/tb_soc.v tb/rv32i_ref_model.v $(TB_MODELS) $(RTL)
+
+$(BUILD)/tb_aes_core.vvp: rtl/aes/*.v rtl/aes/*.vh tb/tb_aes_core.v | $(BUILD)
+	$(IVERILOG) -g2012 -Wall -Irtl/aes -o $@ -s tb_aes_core tb/tb_aes_core.v rtl/aes/aes128_iter.v rtl/aes/aes128_pipe.v
+
+$(BUILD)/tb_aes_accel.vvp: rtl/aes/*.v rtl/aes/*.vh rtl/periph/aes_accel.v tb/tb_aes_accel.v | $(BUILD)
+	$(IVERILOG) -g2012 -Wall $(INC) -o $@ -s tb_aes_accel tb/tb_aes_accel.v rtl/periph/aes_accel.v rtl/aes/aes128_iter.v rtl/aes/aes128_pipe.v
+
 $(BUILD)/tb_periph.vvp: $(wildcard rtl/periph/*.v) tb/tb_periph.v $(TB_MODELS) | $(BUILD)
 	$(IVERILOG) -g2012 -Wall $(INC) -o $@ -s tb_periph tb/tb_periph.v $(TB_MODELS) $(wildcard rtl/periph/*.v)
 
@@ -82,8 +103,8 @@ unit: $(BUILD)/tb_units.vvp
 
 # Run one image and fail unless the testbench printed TEST PASSED.
 define run_sim
-	$(VVP) -n $(BUILD)/tb_soc.vvp +HEX=$(1) $(3) > $(BUILD)/$(2).log 2>&1; \
-	  grep -E "^(cycles|TEST|MISMATCH|RAM MISMATCH|  rtl|  model|UART|SPI|\[uart\])" $(BUILD)/$(2).log; \
+	$(VVP) -n $(BUILD)/$(if $(4),$(4),tb_soc).vvp +HEX=$(1) $(3) > $(BUILD)/$(2).log 2>&1; \
+	  grep -E "^(cycles|TEST|MISMATCH|RAM MISMATCH|  rtl|  model|UART|SPI|\[uart\]|\[mark\])" $(BUILD)/$(2).log; \
 	  grep -q "^TEST PASSED" $(BUILD)/$(2).log
 endef
 
@@ -112,6 +133,29 @@ periph-sw: $(BUILD)/tb_soc.vvp
 	@set -e; for t in $(PERIPH_TESTS); do \
 	  echo "=== periph: $$t"; \
 	  $(call run_sim,$(SWBUILD)/$$t.hex,$$t,$$( [ $$t = uart_test ] && echo $(UART_BANNER) )); \
+	done
+
+aes: aes-core aes-unit aes-sw
+
+aes-core: $(BUILD)/tb_aes_core.vvp
+	@echo "=== aes: cores (aes128_iter, aes128_pipe)"
+	@$(PYTHON) tools/aes_ref.py vectors -n $(AES_NVEC) --seed 1 -o $(BUILD)/aes_vectors.txt
+	@$(VVP) -n $< +VEC=$(BUILD)/aes_vectors.txt > $(BUILD)/tb_aes_core.log 2>&1; \
+	  grep -E "^(---|FAIL|aes128|checks|TEST)" $(BUILD)/tb_aes_core.log; \
+	  grep -q "^TEST PASSED" $(BUILD)/tb_aes_core.log
+
+aes-unit: $(BUILD)/tb_aes_accel.vvp
+	@echo "=== aes: accelerator register-level tests"
+	@$(VVP) -n $< > $(BUILD)/tb_aes_accel.log 2>&1; \
+	  grep -E "^(---|FAIL|aes_accel|TEST)" $(BUILD)/tb_aes_accel.log; \
+	  grep -q "^TEST PASSED" $(BUILD)/tb_aes_accel.log
+
+aes-sw: $(BUILD)/tb_soc.vvp $(BUILD)/tb_soc_iter.vvp
+	@set -e; for t in $(AES_TESTS); do \
+	  echo "=== aes: $$t (pipelined core)"; \
+	  $(call run_sim,$(SWBUILD)/$$t.hex,$$t); \
+	  echo "=== aes: $$t (iterative core)"; \
+	  $(call run_sim,$(SWBUILD)/$$t.hex,$${t}_iter,,tb_soc_iter); \
 	done
 
 random: $(BUILD)/tb_soc.vvp
