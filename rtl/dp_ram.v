@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 // True dual-port RAM, 32-bit words, synchronous read on both ports.
 //   Port A: read-only (instruction fetch), with a read enable that holds the
 //           output when low.

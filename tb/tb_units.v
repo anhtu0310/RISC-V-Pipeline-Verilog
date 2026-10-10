@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 // Unit tests for the combinational blocks: ALU, branch unit and the
 // decoder's immediate generation. Each block is driven with corner cases
 // plus random vectors and compared with a behavioural expression.

@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 // Minimal SoC: RV32I core + unified code/data RAM + peripheral window.
 //
 // Memory map

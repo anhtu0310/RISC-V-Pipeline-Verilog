@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 // RV32I integer ALU (purely combinational).
 module alu (
     input  wire [31:0] op_a,

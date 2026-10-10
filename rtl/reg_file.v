@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 // 32 x 32-bit register file, two asynchronous read ports, one write port.
 //
 // * x0 is hard-wired to zero (never written, always reads 0).

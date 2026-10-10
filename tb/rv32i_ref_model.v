@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 // Instruction-level reference model of RV32I (simulation only).
 //
 // The testbench calls step() once for every instruction the RTL retires and

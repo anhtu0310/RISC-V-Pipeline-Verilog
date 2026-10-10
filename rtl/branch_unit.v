@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 // Branch condition evaluation for B-type instructions.
 module branch_unit (
     input  wire [31:0] rs1,

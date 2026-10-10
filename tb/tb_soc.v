@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 // System-level, self-checking testbench.
 //
 // Runs a program image on soc_top and checks it two ways:

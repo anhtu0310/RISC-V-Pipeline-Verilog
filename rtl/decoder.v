@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 // Instruction decoder: field extraction, immediate generation and control.
 //
 // Unknown or malformed encodings decode as a NOP and raise `illegal` so a

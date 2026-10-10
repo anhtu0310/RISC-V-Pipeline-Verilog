@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 // Data-hazard handling: EX-stage operand forwarding and load-use stall.
 //
 // Forwarding priority is MEM over WB (the younger producer wins). A producer

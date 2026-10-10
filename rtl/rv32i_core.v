@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 // 5-stage in-order RV32I pipeline: IF -> ID -> EX -> MEM -> WB
 //
 // Memory interfaces (both are synchronous-read, so they map directly onto
