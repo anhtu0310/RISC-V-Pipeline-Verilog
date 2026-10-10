@@ -9,11 +9,22 @@
 //      (n << 1) | 1 = failed check n). After that the RAM contents of the
 //      RTL and the model are compared word by word.
 //
+// The SoC's pins are connected to models of a small board:
+//   GPIO  pins 7:0 are looped back externally to pins 31:24, pins 23:16
+//         read 0xA5, pins 15:8 read 0 (when not driven by the SoC)
+//   UART  tb/models/uart_model.v at 16 clocks per bit, echoing every byte
+//   I2C   two tb/models/i2c_slave_model.v devices (0x50 with clock
+//         stretching, 0x51 without) on pulled-up open-drain SCL/SDA
+//   SPI   one tb/models/spi_slave_model.v per chip select, CS n in mode n
+// Loads from peripherals are taken from the RTL by the reference model,
+// so the programs check the peripheral behaviour themselves.
+//
 // Plusargs
 //   +HEX=<file>         program image ($readmemh, one 32-bit word per line)
 //   +MAX_CYCLES=<n>     timeout (default 200000)
 //   +TRACE              print every retired instruction
 //   +VCD=<file>         dump waveforms
+//   +UART_EXPECT=<str>  fail unless the UART terminal received <str> first
 //
 // Exit: prints "TEST PASSED" or "TEST FAILED: ..." and calls $finish
 // (with a non-zero code on failure, via $fatal, so make/CI see it).
@@ -28,12 +39,55 @@ module tb_soc;
 
     always #5 clk = ~clk;   // 100 MHz
 
+    // ------------------------------------------------------------------
+    // DUT and board
+    // ------------------------------------------------------------------
+    wire [31:0] gpio_out, gpio_oe;
+    wire [31:0] gpio_board = {gpio_out[7:0] & gpio_oe[7:0], 8'hA5, 8'h00, 8'h00};
+    wire [31:0] gpio_in    = (gpio_out & gpio_oe) | (gpio_board & ~gpio_oe);
+
+    wire uart_tx, uart_rx;
+
+    wire scl, sda, scl_oe, sda_oe;
+    pullup (scl);
+    pullup (sda);
+    assign scl = scl_oe ? 1'b0 : 1'bz;
+    assign sda = sda_oe ? 1'b0 : 1'bz;
+
+    wire       spi_sclk, spi_mosi, spi_miso;
+    wire [3:0] spi_cs_n;
+    pullup (spi_miso);
+
     soc_top #(
         .RAM_ADDR_WIDTH (RAM_ADDR_WIDTH)
     ) dut (
-        .clk   (clk),
-        .rst_n (rst_n)
+        .clk        (clk),
+        .rst_n      (rst_n),
+        .gpio_in    (gpio_in),
+        .gpio_out   (gpio_out),
+        .gpio_oe    (gpio_oe),
+        .uart_tx    (uart_tx),
+        .uart_rx    (uart_rx),
+        .i2c_scl_i  (scl),
+        .i2c_scl_oe (scl_oe),
+        .i2c_sda_i  (sda),
+        .i2c_sda_oe (sda_oe),
+        .spi_sclk   (spi_sclk),
+        .spi_mosi   (spi_mosi),
+        .spi_miso   (spi_miso),
+        .spi_cs_n   (spi_cs_n)
     );
+
+    uart_model #(.DIV(16), .NAME("uart")) u_term (.clk (clk), .rx (uart_tx), .tx (uart_rx));
+    initial u_term.echo = 1'b1;
+
+    i2c_slave_model #(.ADDR(7'h50), .STRETCH(200)) u_i2c50 (.scl (scl), .sda (sda));
+    i2c_slave_model #(.ADDR(7'h51), .STRETCH(0))   u_i2c51 (.scl (scl), .sda (sda));
+
+    spi_slave_model #(.CPOL(0), .CPHA(0), .ID(8'hA0)) u_spi0 (.sclk (spi_sclk), .mosi (spi_mosi), .cs_n (spi_cs_n[0]), .miso (spi_miso));
+    spi_slave_model #(.CPOL(0), .CPHA(1), .ID(8'hA1)) u_spi1 (.sclk (spi_sclk), .mosi (spi_mosi), .cs_n (spi_cs_n[1]), .miso (spi_miso));
+    spi_slave_model #(.CPOL(1), .CPHA(0), .ID(8'hA2)) u_spi2 (.sclk (spi_sclk), .mosi (spi_mosi), .cs_n (spi_cs_n[2]), .miso (spi_miso));
+    spi_slave_model #(.CPOL(1), .CPHA(1), .ID(8'hA3)) u_spi3 (.sclk (spi_sclk), .mosi (spi_mosi), .cs_n (spi_cs_n[3]), .miso (spi_miso));
 
     rv32i_ref_model #(
         .RAM_ADDR_WIDTH (RAM_ADDR_WIDTH)
@@ -52,6 +106,8 @@ module tb_soc;
 
     reg [1023:0] hex_file;
     reg [1023:0] vcd_file;
+    reg [1023:0] uart_expect;
+    reg          check_uart;
     integer      max_cycles;
     reg          trace_on;
 
@@ -72,6 +128,7 @@ module tb_soc;
         if (!$value$plusargs("MAX_CYCLES=%d", max_cycles))
             max_cycles = 200000;
         trace_on = $test$plusargs("TRACE");
+        check_uart = $value$plusargs("UART_EXPECT=%s", uart_expect);
         if ($value$plusargs("VCD=%s", vcd_file)) begin
             $dumpfile(vcd_file);
             $dumpvars(0, tb_soc);
@@ -135,6 +192,22 @@ module tb_soc;
     // ------------------------------------------------------------------
     // End of test
     // ------------------------------------------------------------------
+    // True if the first bytes the UART terminal received spell `s`
+    // ($value$plusargs right-aligns the string; leading NULs are padding).
+    function uart_received(input [1023:0] s);
+        integer n, j, len;
+        begin
+            len = 0;
+            for (n = 0; n < 128; n = n + 1)
+                if (s[n*8 +: 8] != 8'd0)
+                    len = n + 1;
+            uart_received = (u_term.rx_count >= len);
+            for (j = 0; j < len && uart_received; j = j + 1)
+                if (u_term.rx_buf[j] != s[(len - 1 - j)*8 +: 8])
+                    uart_received = 1'b0;
+        end
+    endfunction
+
     integer k;
     task finish_test(input [8*32-1:0] why);
         begin
@@ -153,6 +226,19 @@ module tb_soc;
             $display("program : %0s", hex_file);
             $display("cycles  : %0d   retired: %0d   CPI: %0.3f",
                      cycles, retired, retired ? (1.0 * cycles) / retired : 0.0);
+
+            if (u_term.frame_errors != 0) begin
+                $display("UART: %0d framing error(s) on the SoC's TX line", u_term.frame_errors);
+                errors = errors + 1;
+            end
+            if (u_spi0.errors + u_spi1.errors + u_spi2.errors + u_spi3.errors != 0) begin
+                $display("SPI: protocol error(s) seen by the slave models");
+                errors = errors + 1;
+            end
+            if (check_uart && !uart_received(uart_expect)) begin
+                $display("UART: expected the terminal to receive \"%0s\"", uart_expect);
+                errors = errors + 1;
+            end
 
             if (why != "") begin
                 $display("TEST FAILED: %0s", why);
