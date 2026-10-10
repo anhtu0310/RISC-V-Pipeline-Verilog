@@ -2,13 +2,16 @@
 
 A 5-stage in-order RV32I CPU (IF, ID, EX, MEM, WB) with forwarding, a
 load-use interlock and branch resolution in EX, plus a small SoC with GPIO,
-UART, I2C and SPI peripherals and a self-checking testbench. Written in plain Verilog-2005; simulates with
+UART, I2C and SPI peripherals, a pipelined AES-128 accelerator and a
+self-checking testbench. Written in plain Verilog-2005; simulates with
 Icarus Verilog and lints clean with Verilator `-Wall`.
 
 See [docs/REPORT.md](docs/REPORT.md) for the review of the original code,
 the list of fixes, and the verification approach, and
 [docs/PERIPHERALS.md](docs/PERIPHERALS.md) for how the peripherals work,
-their register maps and how they are tested.
+their register maps and how they are tested, and [docs/AES.md](docs/AES.md)
+for the AES-128 cores (review of the original, the pipeline) and the
+accelerator.
 
 ## Layout
 
@@ -21,21 +24,25 @@ their register maps and how they are tested.
 | `rtl/reg_file.v` | 32 x 32 register file |
 | `rtl/dp_ram.v` | Dual-port block RAM (instruction + data ports) |
 | `rtl/soc_top.v` | Core + RAM + peripherals + address decode |
-| `rtl/periph/` | GPIO, UART, I2C master, SPI master, FIFO |
+| `rtl/periph/` | GPIO, UART, I2C master, SPI master, FIFO, AES accelerator |
+| `rtl/aes/` | AES-128 cores: 10-stage pipeline and iterative |
 | `rtl/fpga/fpga_top.v` | Board wrapper: I/O pads, reset synchroniser |
 | `rtl/rv32i_defs.vh` | Shared opcode / ALU constants |
 | `tb/tb_soc.v` | System testbench: lockstep against a reference model |
 | `tb/rv32i_ref_model.v` | Instruction-level RV32I reference model |
 | `tb/tb_units.v` | Unit tests for ALU, branch unit, immediates |
 | `tb/tb_periph.v` | Register-level tests of the peripherals |
+| `tb/tb_aes_core.v`, `tb/tb_aes_accel.v` | AES core and accelerator tests |
 | `tb/models/` | UART terminal, I2C slave and SPI slave models |
 | `sw/tests/*.S` | Directed self-checking assembly tests |
 | `sw/c/main.c` | C program test (built with GCC) |
-| `sw/periph/*_test.c` | Peripheral test programs (GPIO, UART, I2C, SPI) |
+| `sw/periph/*_test.c` | Peripheral test programs (GPIO, UART, I2C, SPI, AES) |
+| `sw/periph/aes_bench.c` | AES speed: software vs accelerator |
 | `sw/common/` | Linker script, start-up code, test macros, `soc.h` register map, `periph.h` drivers |
 | `sw/build/*.hex` | Pre-built program images (no cross compiler needed to run tests) |
 | `tools/gen_random.py` | Random program generator for lockstep testing |
 | `tools/bin2hex.py` | Binary to `$readmemh` converter |
+| `tools/aes_ref.py` | AES-128 reference model, test vector generator |
 | `simulator/` | The original C++ cycle model (not used by the new testbench) |
 
 ## Memory map
@@ -47,7 +54,9 @@ their register maps and how they are tested.
 | `0x1000_1000` | 4 KiB | UART |
 | `0x1000_2000` | 4 KiB | I2C master |
 | `0x1000_3000` | 4 KiB | SPI master |
+| `0x1000_4000` | 4 KiB | AES-128 accelerator |
 | `0xF000_0000` | - | `TOHOST`, simulation only: the testbench watches stores here |
+| `0xF000_0004` | - | `MARK`, simulation only: the testbench prints the cycle count |
 
 The CPU starts executing at `0x0000_0000`.
 
@@ -62,6 +71,7 @@ make unit                 # ALU / branch / immediate unit tests
 make isa                  # directed assembly tests
 make ctest                # C program test
 make periph               # peripheral tests (register level + firmware on the SoC)
+make aes                  # AES cores, accelerator registers, firmware test + benchmark
 make random SEEDS="1 2 3" COUNT=1000
 make lint                 # verilator -Wall
 make synth                # Yosys, Xilinx 7-series: LUT/FF per module
@@ -81,6 +91,8 @@ Use `rtl/fpga/fpga_top.v` as the top level: it adds the GPIO and open-drain
 I2C pads and a reset synchroniser around `soc_top`. Set `INIT_FILE` to a
 `$readmemh` image (such as `sw/build/uart_test.hex`) to preload the RAM and
 `CLK_HZ` to the board clock (the UART then starts at 115200 baud and I2C at
-100 kHz). The RAM is written so Vivado/Yosys infer true dual-port block
+100 kHz). `AES_PIPELINED=0` swaps the 15k-LUT AES pipeline for the
+2.5k-LUT iterative core (same registers, same software speed; see
+[docs/AES.md](docs/AES.md) section 8). The RAM is written so Vivado/Yosys infer true dual-port block
 RAM, and the register file maps to distributed RAM. I2C needs pull-ups on
 SCL and SDA. See [docs/PERIPHERALS.md](docs/PERIPHERALS.md) section 9.

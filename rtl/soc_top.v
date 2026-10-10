@@ -1,6 +1,7 @@
 `timescale 1ns / 1ps
 
-// SoC: RV32I core + unified code/data RAM + GPIO, UART, I2C and SPI.
+// SoC: RV32I core + unified code/data RAM + GPIO, UART, I2C, SPI and an
+// AES-128 accelerator.
 //
 // Memory map
 //   0x0000_0000 - RAM_BYTES-1   RAM (code, data, stack). Instruction fetch
@@ -9,6 +10,7 @@
 //   0x1000_1000                 UART   (rtl/periph/uart.v)
 //   0x1000_2000                 I2C    (rtl/periph/i2c_master.v)
 //   0x1000_3000                 SPI    (rtl/periph/spi_master.v)
+//   0x1000_4000                 AES    (rtl/periph/aes_accel.v)
 //   anything else               Unmapped: writes ignored, reads return 0
 //
 // Each peripheral owns a 4 KiB page (only the first 64 words are decoded,
@@ -25,7 +27,8 @@ module soc_top #(
     parameter integer CLK_HZ         = 100_000_000,
     parameter integer UART_BAUD      = 115_200,   // reset value of UART BAUD_DIV
     parameter integer I2C_HZ         = 100_000,   // reset value of I2C PRESCALE
-    parameter integer GPIO_N         = 32
+    parameter integer GPIO_N         = 32,
+    parameter integer AES_PIPELINED  = 1          // 1: 10-stage pipeline, 0: iterative core
 ) (
     input  wire              clk,
     input  wire              rst_n,
@@ -109,10 +112,12 @@ module soc_top #(
     wire sel_uart = sel_periph && page == 4'd1;
     wire sel_i2c  = sel_periph && page == 4'd2;
     wire sel_spi  = sel_periph && page == 4'd3;
+    wire sel_aes  = sel_periph && page == 4'd4;
 
     // Read data steering: remember which slave a read went to.
     localparam [2:0] RD_NONE = 3'd0, RD_RAM = 3'd1, RD_GPIO = 3'd2,
-                     RD_UART = 3'd3, RD_I2C = 3'd4, RD_SPI  = 3'd5;
+                     RD_UART = 3'd3, RD_I2C = 3'd4, RD_SPI  = 3'd5,
+                     RD_AES  = 3'd6;
     reg [2:0] rd_sel_q;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)
@@ -124,6 +129,7 @@ module soc_top #(
         else if (sel_uart) rd_sel_q <= RD_UART;
         else if (sel_i2c)  rd_sel_q <= RD_I2C;
         else if (sel_spi)  rd_sel_q <= RD_SPI;
+        else if (sel_aes)  rd_sel_q <= RD_AES;
         else               rd_sel_q <= RD_NONE;
     end
 
@@ -150,7 +156,7 @@ module soc_top #(
     // ------------------------------------------------------------------
     // Peripherals
     // ------------------------------------------------------------------
-    wire [31:0] gpio_rdata, uart_rdata, i2c_rdata, spi_rdata;
+    wire [31:0] gpio_rdata, uart_rdata, i2c_rdata, spi_rdata, aes_rdata;
     wire [5:0]  reg_addr = dbus_addr[7:2];
 
     gpio #(
@@ -191,6 +197,14 @@ module soc_top #(
         .spi_cs_n (spi_cs_n)
     );
 
+    aes_accel #(
+        .PIPELINED (AES_PIPELINED)
+    ) u_aes (
+        .clk (clk), .rst_n (rst_n),
+        .sel (sel_aes), .we (dbus_we), .re (dbus_re), .addr (reg_addr),
+        .wdata (dbus_wdata), .wstrb (dbus_wstrb), .rdata (aes_rdata)
+    );
+
     // ------------------------------------------------------------------
     // Read data mux
     // ------------------------------------------------------------------
@@ -202,6 +216,7 @@ module soc_top #(
             RD_UART: rdata_mux = uart_rdata;
             RD_I2C:  rdata_mux = i2c_rdata;
             RD_SPI:  rdata_mux = spi_rdata;
+            RD_AES:  rdata_mux = aes_rdata;
             default: rdata_mux = 32'd0;
         endcase
     end

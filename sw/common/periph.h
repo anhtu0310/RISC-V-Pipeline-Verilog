@@ -1,4 +1,4 @@
-/* Small polling drivers for the SoC peripherals (GPIO, UART, I2C, SPI). */
+/* Small polling drivers for the SoC peripherals (GPIO, UART, I2C, SPI, AES). */
 #ifndef PERIPH_H
 #define PERIPH_H
 
@@ -119,6 +119,75 @@ static inline uint8_t spi_xfer(uint8_t b)
     while (REG(SPI_BASE, SPI_STATUS) & SPI_BUSY)
         ;
     return (uint8_t)REG(SPI_BASE, SPI_DATA);
+}
+
+/* ----------------------------------------------------------------- AES */
+/* Blocks and keys are 16-byte buffers in FIPS-197 byte order (byte 0
+ * first), passed as four uint32_t so they must be 4-byte aligned. The
+ * accelerator's registers use the same little-endian word layout, so
+ * words are copied as they are. */
+
+static inline uint32_t aes_status(void) { return REG(AES_BASE, AES_STATUS); }
+
+static inline void aes_set_key(const uint32_t key[4])
+{
+    for (int i = 0; i < 4; i++)
+        REG(AES_BASE, AES_KEY0 + 4 * i) = key[i];
+}
+
+/* Queue one block (caller checks AES_READY first). */
+static inline void aes_push(const uint32_t in[4])
+{
+    for (int i = 0; i < 4; i++)
+        REG(AES_BASE, AES_DIN0 + 4 * i) = in[i];
+    REG(AES_BASE, AES_CMD) = AES_START;
+}
+
+/* Read and pop the oldest result (caller checks AES_OUT_VALID first). */
+static inline void aes_pop(uint32_t out[4])
+{
+    for (int i = 0; i < 4; i++)
+        out[i] = REG(AES_BASE, AES_DOUT0 + 4 * i);
+}
+
+/* Encrypt one block and wait for it. */
+static inline void aes_encrypt_block(const uint32_t key[4], const uint32_t in[4], uint32_t out[4])
+{
+    while (!(aes_status() & AES_READY))
+        ;
+    aes_set_key(key);
+    aes_push(in);
+    while (!(aes_status() & AES_OUT_VALID))
+        ;
+    aes_pop(out);
+}
+
+/* ECB-encrypt n blocks with one key. New blocks are pushed whenever the
+ * accelerator is ready and results are collected as they arrive, so up to
+ * 16 blocks are in flight or queued at once. Uses AUTO_START: the DIN3
+ * write starts each block. */
+static inline void aes_ecb_encrypt(const uint32_t key[4], const uint32_t *in,
+                                   uint32_t *out, uint32_t n)
+{
+    volatile uint32_t *din = &REG(AES_BASE, AES_DIN0);
+    uint32_t sent = 0, done = 0;
+
+    aes_set_key(key);
+    REG(AES_BASE, AES_CTRL) = AES_AUTO_START;
+    while (done < n) {
+        uint32_t s = aes_status();
+        if (sent < n && (s & AES_READY)) {
+            din[0] = in[0]; din[1] = in[1]; din[2] = in[2]; din[3] = in[3];
+            in += 4;
+            sent++;
+        }
+        if (s & AES_OUT_VALID) {
+            aes_pop(out);
+            out += 4;
+            done++;
+        }
+    }
+    REG(AES_BASE, AES_CTRL) = 0;
 }
 
 #endif

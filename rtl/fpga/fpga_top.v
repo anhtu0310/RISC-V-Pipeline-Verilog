@@ -10,7 +10,9 @@
 module fpga_top #(
     parameter         INIT_FILE = "",
     parameter integer CLK_HZ    = 100_000_000,
-    parameter integer GPIO_N    = 16
+    parameter integer GPIO_N    = 16,
+    // 1: pipelined AES (~15k LUT), 0: iterative AES (~2.7k LUT) for small parts
+    parameter integer AES_PIPELINED = 1
 ) (
     input  wire              clk,
     input  wire              rst_btn_n,     // active-low reset button
@@ -55,7 +57,8 @@ module fpga_top #(
     soc_top #(
         .INIT_FILE (INIT_FILE),
         .CLK_HZ    (CLK_HZ),
-        .GPIO_N    (GPIO_N)
+        .GPIO_N    (GPIO_N),
+        .AES_PIPELINED (AES_PIPELINED)
     ) u_soc (
         .clk        (clk),
         .rst_n      (rst_n),

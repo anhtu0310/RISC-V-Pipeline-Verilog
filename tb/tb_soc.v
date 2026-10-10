@@ -26,13 +26,21 @@
 //   +VCD=<file>         dump waveforms
 //   +UART_EXPECT=<str>  fail unless the UART terminal received <str> first
 //
+// A store to MARK_ADDR (0xF000_0004) prints "[mark] <value> at cycle <n>
+// (+<cycles since the previous mark>)", for timing code sections.
+// Parameter AES_PIPELINED selects the AES core (iverilog -P tb_soc.AES_PIPELINED=0).
+//
 // Exit: prints "TEST PASSED" or "TEST FAILED: ..." and calls $finish
 // (with a non-zero code on failure, via $fatal, so make/CI see it).
 module tb_soc;
 `include "rv32i_defs.vh"
 
+    // 0: build the SoC with the iterative AES core instead of the pipeline
+    parameter integer AES_PIPELINED = 1;
+
     localparam integer RAM_ADDR_WIDTH = 12;
     localparam [31:0]  TOHOST_ADDR    = 32'hF000_0000;
+    localparam [31:0]  MARK_ADDR      = 32'hF000_0004;
 
     reg clk   = 1'b0;
     reg rst_n = 1'b0;
@@ -59,7 +67,8 @@ module tb_soc;
     pullup (spi_miso);
 
     soc_top #(
-        .RAM_ADDR_WIDTH (RAM_ADDR_WIDTH)
+        .RAM_ADDR_WIDTH (RAM_ADDR_WIDTH),
+        .AES_PIPELINED  (AES_PIPELINED)
     ) dut (
         .clk        (clk),
         .rst_n      (rst_n),
@@ -112,6 +121,7 @@ module tb_soc;
     reg          trace_on;
 
     integer cycles  = 0;
+    integer last_mark = 0;
     integer retired = 0;
     integer errors  = 0;
     reg     done    = 1'b0;
@@ -176,6 +186,11 @@ module tb_soc;
                     if (errors >= 5)
                         finish_test("too many mismatches");
                 end
+            end
+
+            if (bus_we && bus_addr == MARK_ADDR) begin
+                $display("[mark] %0d at cycle %0d (+%0d)", bus_wdata, cycles, cycles - last_mark);
+                last_mark = cycles;
             end
 
             if (bus_we && bus_addr == TOHOST_ADDR) begin
