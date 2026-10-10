@@ -1,4 +1,4 @@
-build/
+/build/
 sw/build/*.elf
 sw/build/*.bin
 *.vcd
